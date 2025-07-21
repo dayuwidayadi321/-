@@ -5,21 +5,13 @@ import "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.so
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-
-interface IPool {
-    function flashLoanSimple(
-        address receiverAddress,
-        address asset,
-        uint256 amount,
-        bytes calldata params,
-        uint256 referralCode
-    ) external;
-}
+import "@aave/core-v3/contracts/interfaces/IPool.sol"; // Import IPool secara eksplisit
 
 contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
-    address public constant AAVE_POOL = 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951;
-    address public constant UNISWAP_ROUTER = 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E;
-    address public constant WETH = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14;
+    // Gunakan alamat Sepolia untuk contoh ini. Sesuaikan jika Anda di jaringan lain.
+    address public constant AAVE_POOL = 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951; // Aave V3 Pool di Sepolia
+    address public constant UNISWAP_ROUTER = 0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E; // Uniswap V3 Router di Sepolia
+    address public constant WETH = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14; // WETH di Sepolia
     
     event FlashLoanInitiated(address asset, uint256 amount);
     event SwapExecuted(address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
@@ -30,14 +22,14 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
 
     function requestFlashLoan(
         address asset,
-        uint256 amount,
-        bytes memory dexData
+        uint256 amount
     ) external onlyOwner {
+        // params tidak diperlukan jika logika arbitrase ada di dalam _advancedArbitrage
         IPool(AAVE_POOL).flashLoanSimple(
             address(this),
             asset,
             amount,
-            dexData,
+            "", // parameter kosong karena kita tidak meneruskan data ke _advancedArbitrage
             0
         );
         emit FlashLoanInitiated(asset, amount);
@@ -48,72 +40,93 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
         uint256 amount,
         uint256 premium,
         address initiator,
-        bytes calldata params
+        bytes calldata params // params ini bisa digunakan untuk data spesifik DEX jika diperlukan
     ) external override returns (bool) {
         require(msg.sender == AAVE_POOL, "Invalid caller");
         require(initiator == address(this), "Invalid initiator");
 
-        try this._advancedArbitrage(asset, amount, premium, params) returns (uint256 profit) {
-            uint256 totalDebt = amount + premium;
+        uint256 totalDebt = amount + premium;
+
+        // Coba lakukan arbitrase
+        try this._advancedArbitrage(asset, amount) returns (uint256 profit) {
+            // Pastikan kita memiliki cukup token untuk membayar kembali pinjaman
+            require(IERC20(asset).balanceOf(address(this)) >= totalDebt, "Not enough funds to repay flash loan");
+            
+            // Approve AAVE_POOL untuk menarik totalDebt
             IERC20(asset).approve(AAVE_POOL, totalDebt);
             
             emit ArbitrageProfit(asset, profit);
             return true;
         } catch (bytes memory reason) {
             emit OperationFailed(reason);
-            revert("Arbitrage failed");
+            // Penting: Pastikan sisa dana yang dipinjam dikembalikan
+            // Jika arbitrase gagal, kontrak mungkin masih memiliki sisa dana yang perlu dikembalikan.
+            // Di sini kita merevert agar pinjaman dikembalikan secara otomatis oleh Aave.
+            revert("Arbitrage failed: " + string(reason));
         }
     }
 
     function _advancedArbitrage(
         address asset,
-        uint256 amount,
-        uint256 premium,
-        bytes calldata dexData
-    ) external returns (uint256) {
-        IERC20(asset).approve(UNISWAP_ROUTER, amount);
+        uint256 amount // premium tidak diperlukan di sini karena sudah ada di executeOperation
+    ) internal returns (uint256) {
+        // Logika arbitrase yang sebenarnya akan lebih kompleks.
+        // Ini hanya contoh swap bolak-balik untuk mendemonstrasikan fungsi.
+        // Untuk arbitrase nyata, Anda akan mencari perbedaan harga antara DEX/pool yang berbeda.
+
+        // Bagian 1: Swap setengah dari 'asset' ke 'WETH'
+        uint256 amountToSwap1 = amount / 2;
+        require(IERC20(asset).balanceOf(address(this)) >= amountToSwap1, "Insufficient asset balance for first swap");
+        IERC20(asset).approve(UNISWAP_ROUTER, amountToSwap1);
         
-        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+        ISwapRouter.ExactInputSingleParams memory params1 = ISwapRouter.ExactInputSingleParams({
             tokenIn: asset,
             tokenOut: WETH,
-            fee: 3000,
+            fee: 3000, // Fee pool Uniswap V3, contoh 0.3%
             recipient: address(this),
             deadline: block.timestamp + 15,
-            amountIn: amount / 2,
-            amountOutMinimum: 0,
+            amountIn: amountToSwap1,
+            amountOutMinimum: 1, // Atur minimum output yang masuk akal
             sqrtPriceLimitX96: 0
         });
         
-        uint256 wethAmount = ISwapRouter(UNISWAP_ROUTER).exactInputSingle(params);
-        emit SwapExecuted(asset, WETH, amount / 2, wethAmount);
+        uint256 wethAmountOut = ISwapRouter(UNISWAP_ROUTER).exactInputSingle(params1);
+        emit SwapExecuted(asset, WETH, amountToSwap1, wethAmountOut);
 
-        IERC20(WETH).approve(UNISWAP_ROUTER, wethAmount);
+        // Bagian 2: Swap 'WETH' kembali ke 'asset'
+        require(IERC20(WETH).balanceOf(address(this)) >= wethAmountOut, "Insufficient WETH balance for second swap");
+        IERC20(WETH).approve(UNISWAP_ROUTER, wethAmountOut);
         
-        ISwapRouter.ExactInputSingleParams memory reverseParams = ISwapRouter.ExactInputSingleParams({
+        ISwapRouter.ExactInputSingleParams memory params2 = ISwapRouter.ExactInputSingleParams({
             tokenIn: WETH,
             tokenOut: asset,
-            fee: 3000,
+            fee: 3000, // Fee pool yang sama
             recipient: address(this),
             deadline: block.timestamp + 15,
-            amountIn: wethAmount,
-            amountOutMinimum: 0,
+            amountIn: wethAmountOut,
+            amountOutMinimum: 1, // Atur minimum output yang masuk akal
             sqrtPriceLimitX96: 0
         });
         
-        uint256 assetAmountOut = ISwapRouter(UNISWAP_ROUTER).exactInputSingle(reverseParams);
-        emit SwapExecuted(WETH, asset, wethAmount, assetAmountOut);
+        uint256 assetAmountOut = ISwapRouter(UNISWAP_ROUTER).exactInputSingle(params2);
+        emit SwapExecuted(WETH, asset, wethAmountOut, assetAmountOut);
 
-        uint256 totalAsset = assetAmountOut + (amount / 2);
-        uint256 totalDebt = amount + premium;
+        // Hitung total asset yang kita miliki setelah swap
+        // Ini adalah sisa 'asset' dari pinjaman ditambah hasil swap
+        uint256 currentAssetBalance = IERC20(asset).balanceOf(address(this));
         
-        require(totalAsset > totalDebt, "No profit opportunity");
-        uint256 profit = totalAsset - totalDebt;
+        // Asumsi keuntungan jika currentAssetBalance lebih besar dari 'amount' awal
+        // Sebenarnya, profit harus dihitung dari total_asset_yang_dimiliki - total_utang
+        // Dimana total_utang adalah 'amount' + 'premium' dari flash loan.
+        // Karena _advancedArbitrage tidak menerima premium, kita akan mengembalikan kelebihan aset.
+        // Perhitungan profit sebenarnya akan dilakukan di executeOperation.
         
-        return profit;
+        return currentAssetBalance - amount; // Mengembalikan keuntungan relatif terhadap jumlah awal yang dipinjam
     }
 
     function withdraw(address token) external onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
+        require(balance > 0, "No balance to withdraw");
         IERC20(token).transfer(owner(), balance);
     }
 
