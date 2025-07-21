@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
 import "@aave/core-v3/contracts/interfaces/IPool.sol";
-import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol"; // Import IPoolAddressesProvider
+import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
 
 contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
     // Gunakan alamat Sepolia untuk contoh ini. Sesuaikan jika Anda di jaringan lain.
@@ -57,23 +57,19 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
 
         uint256 totalDebt = amount + premium;
 
-        // Coba lakukan arbitrase
-        try _advancedArbitrage(asset, amount) returns (uint256 profit) { // Perbaikan di sini: Hapus 'this.'
-            // Pastikan kita memiliki cukup token untuk membayar kembali pinjaman
-            require(IERC20(asset).balanceOf(address(this)) >= totalDebt, "Not enough funds to repay flash loan");
+        // Panggil fungsi arbitrase internal.
+        // Jika ada 'require' di dalam '_advancedArbitrage' yang gagal, transaksi akan otomatis revert.
+        // Oleh karena itu, tidak perlu 'try/catch' di sini untuk fungsi internal.
+        uint256 profit = _advancedArbitrage(asset, amount); 
             
-            // Approve AAVE_POOL untuk menarik totalDebt
-            IERC20(asset).approve(AAVE_POOL, totalDebt);
-            
-            emit ArbitrageProfit(asset, profit);
-            return true;
-        } catch (bytes memory reason) {
-            emit OperationFailed(reason);
-            // Penting: Pastikan sisa dana yang dipinjam dikembalikan
-            // Jika arbitrase gagal, kontrak mungkin masih memiliki sisa dana yang perlu dikembalikan.
-            // Di sini kita merevert agar pinjaman dikembalikan secara otomatis oleh Aave.
-            revert("Arbitrage failed: " + string(reason));
-        }
+        // Pastikan kita memiliki cukup token untuk membayar kembali pinjaman
+        require(IERC20(asset).balanceOf(address(this)) >= totalDebt, "Not enough funds to repay flash loan");
+        
+        // Approve AAVE_POOL untuk menarik totalDebt
+        IERC20(asset).approve(AAVE_POOL, totalDebt);
+        
+        emit ArbitrageProfit(asset, profit);
+        return true;
     }
 
     function _advancedArbitrage(
