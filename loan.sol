@@ -5,7 +5,8 @@ import "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.so
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import "@aave/core-v3/contracts/interfaces/IPool.sol"; // Import IPool secara eksplisit
+import "@aave/core-v3/contracts/interfaces/IPool.sol";
+import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol"; // Import IPoolAddressesProvider
 
 contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
     // Gunakan alamat Sepolia untuk contoh ini. Sesuaikan jika Anda di jaringan lain.
@@ -20,16 +21,25 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
 
     constructor() Ownable(msg.sender) {}
 
+    // Implementasi fungsi dari IFlashLoanSimpleReceiver
+    function ADDRESSES_PROVIDER() external view override returns (IPoolAddressesProvider) {
+        // Alamat dummy atau sesuaikan dengan AddressesProvider yang sebenarnya jika Anda menggunakannya
+        return IPoolAddressesProvider(0x0000000000000000000000000000000000000000); 
+    }
+
+    function POOL() external view override returns (IPool) {
+        return IPool(AAVE_POOL); // Mengembalikan alamat pool Aave yang sudah Anda definisikan
+    }
+
     function requestFlashLoan(
         address asset,
         uint256 amount
     ) external onlyOwner {
-        // params tidak diperlukan jika logika arbitrase ada di dalam _advancedArbitrage
         IPool(AAVE_POOL).flashLoanSimple(
             address(this),
             asset,
             amount,
-            "", // parameter kosong karena kita tidak meneruskan data ke _advancedArbitrage
+            "",
             0
         );
         emit FlashLoanInitiated(asset, amount);
@@ -40,7 +50,7 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
         uint256 amount,
         uint256 premium,
         address initiator,
-        bytes calldata params // params ini bisa digunakan untuk data spesifik DEX jika diperlukan
+        bytes calldata params
     ) external override returns (bool) {
         require(msg.sender == AAVE_POOL, "Invalid caller");
         require(initiator == address(this), "Invalid initiator");
@@ -48,7 +58,7 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
         uint256 totalDebt = amount + premium;
 
         // Coba lakukan arbitrase
-        try this._advancedArbitrage(asset, amount) returns (uint256 profit) {
+        try _advancedArbitrage(asset, amount) returns (uint256 profit) { // Perbaikan di sini: Hapus 'this.'
             // Pastikan kita memiliki cukup token untuk membayar kembali pinjaman
             require(IERC20(asset).balanceOf(address(this)) >= totalDebt, "Not enough funds to repay flash loan");
             
@@ -68,7 +78,7 @@ contract AdvancedFlashArbitrage is IFlashLoanSimpleReceiver, Ownable {
 
     function _advancedArbitrage(
         address asset,
-        uint256 amount // premium tidak diperlukan di sini karena sudah ada di executeOperation
+        uint256 amount
     ) internal returns (uint256) {
         // Logika arbitrase yang sebenarnya akan lebih kompleks.
         // Ini hanya contoh swap bolak-balik untuk mendemonstrasikan fungsi.
